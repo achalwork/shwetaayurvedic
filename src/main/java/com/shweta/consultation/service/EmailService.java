@@ -35,7 +35,12 @@ public class EmailService {
 
     @Async
     public void sendReminder(Appointment a) {
-        send(a, "Reminder: your consultation starts in " + props.getReminder().getMinutesBefore() + " minutes",
+        sendReminderNow(a);
+    }
+
+    /** Synchronous variant used by ReminderJob so it knows whether the email really went out. */
+    public SendResult sendReminderNow(Appointment a) {
+        return send(a, "Reminder: your consultation starts in " + props.getReminder().getMinutesBefore() + " minutes",
                 "reminder-email");
     }
 
@@ -62,10 +67,10 @@ public class EmailService {
         }
     }
 
-    private void send(Appointment a, String subject, String template) {
+    private SendResult send(Appointment a, String subject, String template) {
         if (!props.getMail().isEnabled()) {
             log.info("Email disabled. Skipping '{}' for appointment {}", subject, a.getId());
-            return;
+            return SendResult.SKIPPED;
         }
         try {
             Context ctx = new Context();
@@ -94,8 +99,10 @@ public class EmailService {
             helper.setText(html, true);
             mailSender.send(msg);
             log.info("Email '{}' sent for appointment {}", subject, a.getId());
+            return SendResult.SENT;
         } catch (Exception e) {
             log.error("Email failed for appointment {}", a.getId(), e);
+            return SendResult.FAILED;
         }
     }
 }

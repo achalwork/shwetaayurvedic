@@ -17,6 +17,9 @@ import org.springframework.stereotype.Component;
  * Google Meet link by WhatsApp + email. The patient therefore receives the link between
  * N minutes and N minutes minus 30 seconds before the consultation.
  *
+ * If every enabled channel fails the claim is released and the reminder is retried on the next run
+ * until the appointment starts.
+ *
  * If the Meet link is missing (Google was down at booking time) it is created now and the
  * reminder is retried on the next run, instead of sending a reminder without a link.
  */
@@ -56,8 +59,17 @@ public class ReminderJob {
             if (repo.claimReminder(a.getId()) == 1) {
                 log.info("Sending reminder for appointment {} (meet link present: {})",
                         a.getReference(), a.getMeetLink() != null);
-                whatsAppService.sendReminder(a);
-                emailService.sendReminder(a);
+                SendResult wa = whatsAppService.sendReminderNow(a);
+                SendResult mail = emailService.sendReminderNow(a);
+                boolean anySent = wa == SendResult.SENT || mail == SendResult.SENT;
+                boolean anyFailed = wa == SendResult.FAILED || mail == SendResult.FAILED;
+                if (!anySent && anyFailed) {
+                    // Nothing reached the patient: release the claim, retry on the next run
+                    // (the query only returns appointments that have not started yet).
+                    repo.releaseReminder(a.getId());
+                    log.error("Reminder for {} failed on all enabled channels (whatsapp={}, email={}); will retry",
+                            a.getReference(), wa, mail);
+                }
             }
         }
     }

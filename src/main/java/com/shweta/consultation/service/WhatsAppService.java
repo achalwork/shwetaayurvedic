@@ -6,6 +6,7 @@ import com.shweta.consultation.util.TimeUtil;
 import java.util.List;
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
@@ -20,10 +21,15 @@ import org.springframework.web.client.RestClientResponseException;
 public class WhatsAppService {
 
     private final AppProperties props;
-    private final RestClient rest = RestClient.create();
+    private final RestClient rest;
 
     public WhatsAppService(AppProperties props) {
         this.props = props;
+        // Timeouts so a hung Meta API call can never block the reminder scheduler thread.
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10_000);
+        factory.setReadTimeout(10_000);
+        this.rest = RestClient.builder().requestFactory(factory).build();
     }
 
     /** Template params: {{1}} name, {{2}} date, {{3}} time */
@@ -36,16 +42,21 @@ public class WhatsAppService {
     /** Template params: {{1}} name, {{2}} time, {{3}} meet link */
     @Async
     public void sendReminder(Appointment a) {
+        sendReminderNow(a);
+    }
+
+    /** Synchronous variant used by ReminderJob so it knows whether the message really went out. */
+    public SendResult sendReminderNow(Appointment a) {
         String link = a.getMeetLink() != null ? a.getMeetLink() : "the doctor will share the joining link with you shortly";
-        sendTemplate(a, props.getWhatsapp().getReminderTemplate(),
+        return sendTemplate(a, props.getWhatsapp().getReminderTemplate(),
                 List.of(a.getName(), TimeUtil.time(a.getStartTime()) + " IST", link));
     }
 
-    private void sendTemplate(Appointment a, String templateName, List<String> params) {
+    private SendResult sendTemplate(Appointment a, String templateName, List<String> params) {
         AppProperties.Whatsapp w = props.getWhatsapp();
         if (!w.isEnabled()) {
             log.info("WhatsApp disabled. Skipping template '{}' for appointment {}", templateName, a.getId());
-            return;
+            return SendResult.SKIPPED;
         }
         try {
             List<Map<String, String>> parameters = params.stream()
@@ -69,11 +80,14 @@ public class WhatsAppService {
                     .toBodilessEntity();
 
             log.info("WhatsApp template '{}' sent for appointment {}", templateName, a.getId());
+            return SendResult.SENT;
         } catch (RestClientResponseException e) {
             log.error("WhatsApp API error for appointment {}: {} {}", a.getId(), e.getStatusCode(),
                     e.getResponseBodyAsString());
+            return SendResult.FAILED;
         } catch (Exception e) {
             log.error("WhatsApp send failed for appointment {}", a.getId(), e);
+            return SendResult.FAILED;
         }
     }
 }
